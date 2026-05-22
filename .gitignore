@@ -15,3 +15,8 @@ appsettings.Production.json
 ## OS
 .DS_Store
 Thumbs.db
+
+## Guías de estudio
+GUIA_ESTUDIO.md
+GUIA_ESTUDIO.docx
+~$*.docx
