@@ -1,4 +1,4 @@
-# MiApp — Clean Architecture con .NET 10
+# MiApp — Clean Architecture con .NET 8
 
 Sistema de e-commerce con autenticación JWT, roles y CQRS.  
 **Asignatura:** Backend 2026 — Tecnicatura Universitaria en Desarrollo de Software
@@ -7,7 +7,7 @@ Sistema de e-commerce con autenticación JWT, roles y CQRS.
 
 ## Requisitos previos
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- [.NET 8 SDK](https://dotnet.microsoft.com/download)
 - [Visual Studio Code](https://code.visualstudio.com) con extensión **C# Dev Kit**
 - Extensión **dotnet-ef** (se instala automáticamente con el paso 3)
 
@@ -48,7 +48,7 @@ dotnet run --project src/MiApp.WebApi
 La API queda disponible en: `http://localhost:5141`
 
 ### 6. Abrir la UI de pruebas
-Abrí en el navegador: **http://localhost:5141/scalar/v1**
+Abrí en el navegador: **http://localhost:5141/swagger**
 
 ---
 
@@ -71,7 +71,7 @@ MiApp/
 │   │   │   │   └── Commands/Login/     ← LoginCommand, Handler, Validator, Response
 │   │   │   ├── Productos/
 │   │   │   │   ├── Commands/CrearProducto/   ← CrearProductoCommand + Handler + Validator
-│   │   │   │   └── Queries/GetProductoById/  ← GetProductoByIdQuery + Handler + Dto
+│   │   │   │   ├── Queries/GetProductoById/  ← GetProductoByIdQuery + Handler + Dto
 │   │   │   │   └── Queries/GetAllProductos/  ← GetAllProductosQuery + Handler
 │   │   │   └── Ordenes/
 │   │   │       └── Commands/CrearOrden/      ← CrearOrdenCommand + Handler + Validator
@@ -145,16 +145,19 @@ POST /api/auth/login
 ```
 **Respuesta:** HTTP 200 con token JWT. Copiá el campo `"token"`.
 
-### Paso 3 — Usar el token en Scalar
-1. En Scalar (`http://localhost:5141/scalar/v1`) buscá el botón **Authorize** o **Bearer**
-2. Ingresá el token: `Bearer eyJhbGci...`
+### Paso 3 — Autorizar en Swagger
+1. Abrí **http://localhost:5141/swagger**
+2. Clic en el botón **Authorize** (candado, arriba a la derecha)
+3. Pegá el token (solo el token, sin la palabra "Bearer") y clic en **Authorize**
 
 ### Paso 4 — Crear un producto (solo Admin)
-Para crear un usuario Admin, registrate normalmente y luego editá `Role = 1` directamente en la BD con DB Browser for SQLite.
+Para crear un usuario Admin, registrate normalmente y luego ejecutá en SQLite:
+```sql
+UPDATE Users SET Role = 1 WHERE Email = 'tu@email.com';
+```
 
 ```json
 POST /api/products
-Authorization: Bearer <token-admin>
 {
   "nombre": "Laptop Gaming",
   "descripcion": "16GB RAM, RTX 4060",
@@ -166,7 +169,6 @@ Authorization: Bearer <token-admin>
 ### Paso 5 — Crear una orden
 ```json
 POST /api/orders
-Authorization: Bearer <tu-token>
 {
   "items": [
     { "productId": "<id-del-producto>", "quantity": 2 }
@@ -209,17 +211,17 @@ dotnet ef database update --project src/MiApp.Infrastructure --startup-project s
 
 ## Tecnologías utilizadas
 
-| Tecnología | Uso |
-|------------|-----|
-| .NET 10 | Framework principal |
-| ASP.NET Core | Web API |
-| Entity Framework Core | ORM / acceso a datos |
-| SQLite | Base de datos (desarrollo) |
-| MediatR | Patrón Mediator / CQRS |
-| FluentValidation | Validación de comandos |
-| BCrypt.Net | Hash de contraseñas |
-| JWT Bearer | Autenticación stateless |
-| Scalar | UI de documentación API |
+| Tecnología | Versión | Uso |
+|------------|---------|-----|
+| .NET 8 | 8.0 | Framework principal |
+| ASP.NET Core | 8.0 | Web API |
+| Entity Framework Core | 8.0.11 | ORM / acceso a datos |
+| SQLite | — | Base de datos (desarrollo) |
+| MediatR | 14.1.0 | Patrón Mediator / CQRS |
+| FluentValidation | 12.1.1 | Validación de comandos |
+| BCrypt.Net-Next | 4.2.0 | Hash de contraseñas |
+| JWT Bearer | 8.0.0 | Autenticación stateless |
+| Swagger (Swashbuckle) | 6.6.2 | UI de documentación API |
 
 ---
 
