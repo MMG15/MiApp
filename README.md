@@ -1,228 +1,197 @@
-# MiApp — Clean Architecture con .NET 8
+# MiApp — Sistema distribuido: E-commerce + PaymentService
 
-Sistema de e-commerce con autenticación JWT, roles y CQRS.  
-**Asignatura:** Backend 2026 — Tecnicatura Universitaria en Desarrollo de Software
+**Asignatura:** Backend (Optativa II) 2026 — Trabajo Final Integrador
+**Opción elegida:** **Opción 1 — PaymentService** (flujo request/response y manejo de estados de la orden)
+
+Dos proyectos .NET 8 independientes, cada uno con su propia solución, su propio puerto y su propia base de datos,
+comunicados **solo por HTTP** (`HttpClient` vía `IHttpClientFactory`).
+
+> **Organización del repo:** un solo repositorio con dos carpetas.
+> - `/` (raíz) → **E-commerce** (`MiApp.sln`, carpeta `src/`)
+> - `/PaymentService` → **PaymentService** (`PaymentService/PaymentService.sln`, carpeta `PaymentService/src/`)
+
+```
+Cliente (Swagger)
+      │  POST /api/orders/{id}/confirm   (con JWT)
+      ▼
+┌────────────────────────┐    HttpClient + JWT     ┌────────────────────────┐
+│ E-commerce API  :7100  │ ──────────────────────▶ │ PaymentService  :7200  │
+│ Products·Orders·Users  │   { orderId, amount }   │ Aprueba/rechaza pagos  │
+│ miapp.db (SQLite)      │ ◀────────────────────── │ payments.db (SQLite)   │
+└────────────────────────┘ { status, transactionId }└────────────────────────┘
+```
 
 ---
 
-## Requisitos previos
+## 1. Requisitos
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download)
-- [Visual Studio Code](https://code.visualstudio.com) con extensión **C# Dev Kit**
-- Extensión **dotnet-ef** (se instala automáticamente con el paso 3)
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- Nada más: las bases SQLite se crean solas y las migraciones se aplican al arrancar cada servicio.
+  (Opcional: `dotnet tool install --global dotnet-ef` para crear migraciones nuevas.)
 
----
+## 2. Cómo levantar los dos servicios
 
-## Pasos para ejecutar el proyecto
+Abrí **dos terminales** desde la raíz del repo. Levantá primero PaymentService.
 
-### 1. Clonar o descomprimir el proyecto
+**Terminal 1 — PaymentService (puerto 7200)**
 ```bash
-cd C:\Users\TuUsuario\
-# Si clonás:
-git clone <url-del-repo> MiApp
-cd MiApp
+dotnet run --project PaymentService/src/PaymentService.Api
 ```
 
-### 2. Restaurar dependencias
-```bash
-dotnet restore
-```
-
-### 3. Instalar herramienta de migraciones (solo la primera vez)
-```bash
-dotnet tool install --global dotnet-ef
-```
-
-### 4. Aplicar las migraciones (crea la base de datos SQLite)
-```bash
-dotnet ef database update \
-  --project src/MiApp.Infrastructure \
-  --startup-project src/MiApp.WebApi
-```
-Esto crea el archivo `miapp.db` dentro de `src/MiApp.WebApi/`.
-
-### 5. Ejecutar la API
+**Terminal 2 — E-commerce (puerto 7100)**
 ```bash
 dotnet run --project src/MiApp.WebApi
 ```
-La API queda disponible en: `http://localhost:5141`
 
-### 6. Abrir la UI de pruebas
-Abrí en el navegador: **http://localhost:5141/swagger**
+| Servicio       | URL base                | Swagger                               | Base de datos |
+|----------------|-------------------------|---------------------------------------|---------------|
+| E-commerce     | `http://localhost:7100` | http://localhost:7100/swagger         | `src/MiApp.WebApi/miapp.db` |
+| PaymentService | `http://localhost:7200` | http://localhost:7200/swagger         | `PaymentService/src/PaymentService.Api/payments.db` |
 
----
+Al arrancar, cada servicio ejecuta `Database.MigrateAsync()` (crea o actualiza su base).
+El e-commerce además crea el **usuario Admin** si no existe.
 
-## Estructura del proyecto
+> La URL de PaymentService que usa el e-commerce está en `src/MiApp.WebApi/appsettings.json`
+> → `"Services": { "Payment": "http://localhost:7200/" }`. Si cambiás el puerto de PaymentService
+> (en su `Properties/launchSettings.json`), cambiá también esa clave.
+
+## 3. Usuario Admin de prueba
+
+| Email               | Contraseña  | Rol   |
+|---------------------|-------------|-------|
+| `admin@sistema.com` | `Admin123!` | Admin |
+
+- Lo crea `DbInitializer` al iniciar el e-commerce (sección `SeedAdmin` de `appsettings.Development.json`).
+- Todo usuario que se registra queda como **Customer**. Un Admin puede promoverlo con
+  `PUT /api/users/{id}/role` → `{ "rol": "Admin" }` (el usuario tiene que volver a loguearse para que su token tenga el rol nuevo).
+
+## 4. Regla de negocio de PaymentService
+
+La regla vive en la entidad de dominio `Payment.Process(...)`
+(`PaymentService/src/PaymentService.Domain/Entities/Payment.cs`):
+
+| Condición                                   | Resultado    | Motivo (`reason`)                                  |
+|---------------------------------------------|--------------|----------------------------------------------------|
+| Moneda distinta de `ARS`                    | **Rejected** | "Solo se aceptan pagos en ARS."                    |
+| Monto **≥ 100.000 ARS**                     | **Rejected** | "El monto ... supera el límite de aprobación ..."  |
+| Monto **> 0 y < 100.000 ARS**               | **Approved** | —                                                  |
+| Monto ≤ 0 u `orderId` vacío                 | **400 Bad Request** (validación, no se registra el pago) |
+
+Todos los pagos (aprobados o rechazados) se guardan con un `transactionId` con formato `TX-XXXXXXXX`.
+
+**Idempotencia:** el `orderId` tiene índice único. Si llega dos veces el mismo `orderId`,
+PaymentService devuelve el pago ya registrado y no crea uno nuevo (evita cobrar dos veces cuando el e-commerce reintenta).
+
+## 5. Qué hace el e-commerce con la respuesta
+
+Estados de la orden (`OrderStatus`): `Pending` → `Paid` | `PaymentRejected`
+
+| Situación                                  | Estado de la orden | Respuesta al cliente |
+|--------------------------------------------|--------------------|----------------------|
+| PaymentService responde `Approved`         | **Paid** (se guarda `transactionId` y fecha) | `200` |
+| PaymentService responde `Rejected`         | **PaymentRejected** y **se devuelve el stock** | `200` con el motivo |
+| PaymentService **apagado o no responde**   | **sigue Pending** (no se guarda nada) | `503` "El servicio de pagos no está disponible... podés volver a confirmarla más tarde" |
+| La orden no está Pending (ya pagada/rechazada) | sin cambios | `400` |
+| La orden es de otro usuario                | sin cambios | `403` |
+
+**Resiliencia (punto extra):** el `HttpClient` tipado tiene timeout total de 10 s, timeout por intento de 3 s
+y **2 reintentos con Polly** (300 ms y 600 ms) ante errores de red, 5xx, 408 o timeout.
+
+## 6. Decisión sobre JWT entre servicios
+
+La llamada e-commerce → PaymentService **va protegida con JWT**.
+PaymentService no emite tokens: valida los del e-commerce con el mismo `Issuer`, `Audience` y `Secret`.
+Un `DelegatingHandler` (`BearerTokenForwardingHandler`) reenvía el header `Authorization` del usuario
+que confirmó la orden. Así PaymentService no queda abierto: sin token responde `401`.
+
+El `Secret` **no** está en `appsettings.json`: está en `appsettings.Development.json` (solo para desarrollo).
+En producción se pasa por variable de entorno: `JwtSettings__Secret=...`.
+
+## 7. Endpoints
+
+### E-commerce — `http://localhost:7100`
+
+| Método | Ruta                          | Acceso         | Descripción |
+|--------|-------------------------------|----------------|-------------|
+| POST   | `/api/auth/register`          | Público        | Registra un usuario (rol Customer) y devuelve token |
+| POST   | `/api/auth/login`             | Público        | Devuelve el JWT |
+| GET    | `/api/products`               | Logueado       | Lista productos |
+| GET    | `/api/products/{id}`          | Logueado       | Un producto |
+| POST   | `/api/products`               | **Admin**      | Crea un producto |
+| POST   | `/api/orders`                 | Logueado       | Crea una orden (descuenta stock, queda `Pending`) |
+| POST   | `/api/orders/{id}/confirm`    | Dueño          | **Confirma/paga: llama a PaymentService** |
+| GET    | `/api/orders/{id}`            | Dueño o Admin  | Detalle de una orden |
+| GET    | `/api/orders/my`              | Logueado       | Mis órdenes |
+| GET    | `/api/orders`                 | **Admin**      | Todas las órdenes |
+| PUT    | `/api/users/{id}/role`        | **Admin**      | Cambia el rol de un usuario |
+
+### PaymentService — `http://localhost:7200` (todos requieren JWT)
+
+| Método | Ruta                              | Descripción |
+|--------|-----------------------------------|-------------|
+| POST   | `/api/payments/process`           | Recibe `{ orderId, amount, currency? }` → `{ paymentId, orderId, status, transactionId, amount, currency, reason, processedAt }` |
+| GET    | `/api/payments/order/{orderId}`   | Pago de una orden |
+| GET    | `/api/payments`                   | Todos los pagos |
+
+## 8. Reproducir el flujo completo con Swagger
+
+1. Levantá los dos servicios (sección 2).
+2. En http://localhost:7100/swagger → `POST /api/auth/login` con el Admin → copiá el `token`.
+3. Botón **Authorize** → pegá **solo el token** (sin la palabra "Bearer").
+4. `POST /api/products` → `{ "nombre": "Mouse", "descripcion": "Óptico", "precio": 15000, "stock": 10 }` → copiá el `id`.
+   Creá otro caro: `{ "nombre": "Notebook", "descripcion": "i7", "precio": 900000, "stock": 5 }`.
+5. `POST /api/auth/register` con un cliente → copiá su `token` y volvé a **Authorize** con ese token.
+6. `POST /api/orders` → `{ "items": [ { "productId": "<id Mouse>", "quantity": 2 } ] }` → estado `Pending`, total 30000.
+7. `POST /api/orders/{id}/confirm` → **`Paid`** con `transactionId`.
+8. Verificá en http://localhost:7200/swagger (Authorize con el mismo token) → `GET /api/payments/order/{orderId}` → `Approved`, mismo `transactionId`.
+9. Repetí 6–7 con la Notebook → **`PaymentRejected`**; `GET /api/products/{id}` muestra que el stock volvió.
+10. **Camino de fallo:** cortá PaymentService (Ctrl+C), creá una orden y confirmala → **503** y `GET /api/orders/{id}` sigue en `Pending`.
+    Volvé a levantar PaymentService, confirmá de nuevo → `Paid`.
+11. **Roles:** con el token del cliente, `GET /api/orders` → **403**. Con el del Admin → 200.
+
+También están los archivos `src/MiApp.WebApi/MiApp.WebApi.http` y
+`PaymentService/src/PaymentService.Api/PaymentService.Api.http` con todo el flujo listo para la extensión *REST Client* de VS Code.
+
+## 9. Arquitectura (igual en los dos proyectos)
+
+Clean Architecture con 4 capas. Regla de dependencia: **las flechas apuntan hacia el Dominio**.
 
 ```
-MiApp/
-├── src/
-│   ├── MiApp.Domain/           ← Entidades, interfaces, excepciones (sin dependencias)
-│   │   ├── Entities/           ← Product, User, Category, Order, OrderItem
-│   │   ├── Interfaces/         ← IProductRepository, IUserRepository, IOrderRepository, IUnitOfWork
-│   │   ├── Exceptions/         ← DomainException, ProductNotFoundException, InsufficientStockException
-│   │   ├── ValueObjects/       ← Email, Money
-│   │   └── Enums/              ← OrderStatus, UserRole (Admin, Customer)
-│   │
-│   ├── MiApp.Application/      ← Casos de uso con CQRS + MediatR
-│   │   ├── Features/
-│   │   │   ├── Auth/
-│   │   │   │   ├── Commands/Register/  ← RegisterCommand, Handler, Validator, Response
-│   │   │   │   └── Commands/Login/     ← LoginCommand, Handler, Validator, Response
-│   │   │   ├── Productos/
-│   │   │   │   ├── Commands/CrearProducto/   ← CrearProductoCommand + Handler + Validator
-│   │   │   │   ├── Queries/GetProductoById/  ← GetProductoByIdQuery + Handler + Dto
-│   │   │   │   └── Queries/GetAllProductos/  ← GetAllProductosQuery + Handler
-│   │   │   └── Ordenes/
-│   │   │       └── Commands/CrearOrden/      ← CrearOrdenCommand + Handler + Validator
-│   │   ├── Common/
-│   │   │   ├── Behaviors/      ← ValidationBehavior, LoggingBehavior
-│   │   │   └── Exceptions/     ← NotFoundException
-│   │   └── Contracts/
-│   │       └── Infrastructure/ ← IJwtTokenService, IPasswordHasher, IEmailService, IPaymentGateway
-│   │
-│   ├── MiApp.Infrastructure/   ← EF Core, repositorios, JWT, BCrypt
-│   │   ├── Persistence/
-│   │   │   ├── AppDbContext.cs
-│   │   │   └── Configurations/ ← ProductConfiguration, UserConfiguration, OrderConfiguration, etc.
-│   │   ├── Repositories/       ← ProductRepository, UserRepository, OrderRepository
-│   │   ├── Services/           ← JwtTokenService, PasswordHasher
-│   │   └── Migrations/         ← InitialCreate, AddAuthAndOrders
-│   │
-│   └── MiApp.WebApi/           ← Controllers, Program.cs, Middleware
-│       ├── Controllers/        ← AuthController, ProductsController, OrdersController
-│       └── Middleware/         ← GlobalExceptionHandler
-└── README.md
+Api / WebApi  ──▶  Application  ──▶  Domain
+     │                                 ▲
+     └──────▶  Infrastructure  ────────┘   (Infrastructure implementa interfaces de Domain/Application)
 ```
 
----
+| Capa | E-commerce (`src/`) | PaymentService (`PaymentService/src/`) |
+|------|---------------------|----------------------------------------|
+| **Domain** (no depende de nada) | `Product`, `Order`, `OrderItem`, `User`, VOs `Email`/`Money`, excepciones, interfaces de repositorio | `Payment` (regla de aprobación), VO `Money`, `PaymentStatus`, `IPaymentRepository` |
+| **Application** (CQRS + MediatR + FluentValidation) | Commands: Register, Login, CrearProducto, CrearOrden, **ConfirmarOrden**, CambiarRol. Queries: productos y órdenes. Puerto `IPaymentClient` | Command `ProcessPayment`. Queries `GetPaymentByOrderId`, `GetAllPayments` |
+| **Infrastructure** | EF Core (`AppDbContext`, repositorios, migraciones), `JwtTokenService`, BCrypt, **`PaymentClient`** (HTTP), `DbInitializer` | EF Core (`PaymentDbContext`, `PaymentRepository`, migraciones) |
+| **Api** | Controllers, middleware de errores, JWT, Swagger, registro del `HttpClient` + Polly | `PaymentsController`, middleware de errores, validación JWT, Swagger |
 
-## Endpoints disponibles
+Paquetes EF Core en **8.0.11** en ambos proyectos.
 
-### Autenticación (sin JWT requerido)
+## 10. Migraciones
 
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| POST | `/api/auth/register` | Registrar nuevo usuario (rol: Customer) |
-| POST | `/api/auth/login` | Iniciar sesión, devuelve JWT |
+| Proyecto | Migración | Qué genera |
+|----------|-----------|-----------|
+| E-commerce | `InitialCreate` | Tabla `Products` |
+| E-commerce | `AddAuthAndOrders` | Tablas `Categories`, `Users` (email único), `Orders`, `OrderItems` |
+| E-commerce | `AddPaymentInfoToOrders` | Columnas `TransactionId`, `PaymentProcessedAt` en `Orders` + índice `IX_Orders_UserId` |
+| PaymentService | `InitialCreate` | Tabla `Payments` (índice único en `OrderId`, columnas `Amount`/`Currency` del VO Money) |
 
-### Productos (requiere JWT)
-
-| Método | Ruta | Rol requerido | Descripción |
-|--------|------|---------------|-------------|
-| GET | `/api/products` | Admin / Customer | Listar todos los productos |
-| GET | `/api/products/{id}` | Admin / Customer | Obtener producto por ID |
-| POST | `/api/products` | **Admin** | Crear producto |
-
-### Órdenes (requiere JWT)
-
-| Método | Ruta | Rol requerido | Descripción |
-|--------|------|---------------|-------------|
-| POST | `/api/orders` | Admin / Customer | Crear una orden |
-
----
-
-## Cómo probar paso a paso
-
-### Paso 1 — Registrar un usuario
-```json
-POST /api/auth/register
-{
-  "name": "Juan Pérez",
-  "email": "juan@email.com",
-  "password": "123456"
-}
-```
-**Respuesta:** HTTP 201 con token JWT
-
-### Paso 2 — Iniciar sesión
-```json
-POST /api/auth/login
-{
-  "email": "juan@email.com",
-  "password": "123456"
-}
-```
-**Respuesta:** HTTP 200 con token JWT. Copiá el campo `"token"`.
-
-### Paso 3 — Autorizar en Swagger
-1. Abrí **http://localhost:5141/swagger**
-2. Clic en el botón **Authorize** (candado, arriba a la derecha)
-3. Pegá el token (solo el token, sin la palabra "Bearer") y clic en **Authorize**
-
-### Paso 4 — Crear un producto (solo Admin)
-Para crear un usuario Admin, registrate normalmente y luego ejecutá en SQLite:
-```sql
-UPDATE Users SET Role = 1 WHERE Email = 'tu@email.com';
-```
-
-```json
-POST /api/products
-{
-  "nombre": "Laptop Gaming",
-  "descripcion": "16GB RAM, RTX 4060",
-  "precio": 1500.00,
-  "stock": 10
-}
-```
-
-### Paso 5 — Crear una orden
-```json
-POST /api/orders
-{
-  "items": [
-    { "productId": "<id-del-producto>", "quantity": 2 }
-  ]
-}
-```
-
----
-
-## Roles
-
-| Rol | Valor en BD | Permisos |
-|-----|-------------|----------|
-| Admin | 1 | Todo: crear productos, ver productos, crear órdenes |
-| Customer | 2 | Ver productos, crear órdenes propias |
-
----
-
-## Base de datos
-
-El proyecto usa **SQLite** en desarrollo. El archivo `miapp.db` se crea automáticamente al correr las migraciones.
-
-Para ver los datos podés usar:
-- [DB Browser for SQLite](https://sqlitebrowser.org) — abrí `src/MiApp.WebApi/miapp.db`
-
-### Comandos de migraciones
-
+Crear una migración nueva (ejemplo e-commerce):
 ```bash
-# Ver migraciones aplicadas
-dotnet ef migrations list --project src/MiApp.Infrastructure --startup-project src/MiApp.WebApi
-
-# Crear nueva migración (cuando cambiás el modelo)
-dotnet ef migrations add NombreDeLaMigracion --project src/MiApp.Infrastructure --startup-project src/MiApp.WebApi
-
-# Aplicar migraciones
-dotnet ef database update --project src/MiApp.Infrastructure --startup-project src/MiApp.WebApi
+dotnet ef migrations add NombreMigracion --project src/MiApp.Infrastructure --startup-project src/MiApp.WebApi
+```
+PaymentService:
+```bash
+dotnet ef migrations add NombreMigracion --project PaymentService/src/PaymentService.Infrastructure --startup-project PaymentService/src/PaymentService.Api
 ```
 
----
+## 11. Notas y limitaciones
 
-## Tecnologías utilizadas
-
-| Tecnología | Versión | Uso |
-|------------|---------|-----|
-| .NET 8 | 8.0 | Framework principal |
-| ASP.NET Core | 8.0 | Web API |
-| Entity Framework Core | 8.0.11 | ORM / acceso a datos |
-| SQLite | — | Base de datos (desarrollo) |
-| MediatR | 14.1.0 | Patrón Mediator / CQRS |
-| FluentValidation | 12.1.1 | Validación de comandos |
-| BCrypt.Net-Next | 4.2.0 | Hash de contraseñas |
-| JWT Bearer | 8.0.0 | Autenticación stateless |
-| Swagger (Swashbuckle) | 6.6.2 | UI de documentación API |
-
----
-
-*Prof. Tec. Nicolás Ortiz — Backend 2026 — TUDS Tercer Año*
+- Las soluciones están en formato `.sln` (compatible con el SDK de .NET 8; el formato `.slnx` necesita SDK 9+).
+- La entidad `Category` existe en el dominio y en la base (ejercicio de la Unidad 4) pero ningún endpoint la usa todavía.
+- MediatR 14 requiere licencia para uso comercial; para este trabajo académico no aplica.
+- Si tenés una `miapp.db` vieja de antes del trabajo final y algo no cuadra, borrala: se vuelve a crear sola al arrancar.

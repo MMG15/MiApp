@@ -31,7 +31,8 @@ public class ProductRepository : IProductRepository
             .ToListAsync(cancellationToken);
 
     public async Task<bool> ExistsAsync(string name, CancellationToken cancellationToken = default)
-        => await _context.Products.AnyAsync(p => p.Name == name, cancellationToken);
+        => await _context.Products.AnyAsync(
+            p => p.Name.ToLower() == name.Trim().ToLower(), cancellationToken);
 
     public async Task AddAsync(Product entity, CancellationToken cancellationToken = default)
         => await _context.Products.AddAsync(entity, cancellationToken);

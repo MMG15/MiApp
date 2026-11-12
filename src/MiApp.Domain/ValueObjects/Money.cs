@@ -23,12 +23,22 @@ public sealed class Money : ValueObject
         return new Money(amount, currency.ToUpper());
     }
 
+    public static Money Zero(string currency = "ARS") => Create(0, currency);
+
     public Money Add(Money other)
     {
         if (Currency != other.Currency)
             throw new DomainException("No se pueden sumar monedas diferentes.");
 
         return new Money(Amount + other.Amount, Currency);
+    }
+
+    public Money Multiply(int quantity)
+    {
+        if (quantity < 0)
+            throw new DomainException("La cantidad no puede ser negativa.");
+
+        return new Money(Amount * quantity, Currency);
     }
 
     protected override IEnumerable<object> GetEqualityComponents()

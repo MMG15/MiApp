@@ -1,17 +1,27 @@
 using MiApp.Domain.Enums;
 using MiApp.Domain.Exceptions;
+using MiApp.Domain.ValueObjects;
 
 namespace MiApp.Domain.Entities;
 
 public class Order : BaseEntity
 {
+    // La lista real es privada: desde afuera solo se puede leer.
+    // Los ítems se agregan únicamente con AddItem(), que aplica las reglas.
+    private readonly List<OrderItem> _items = new();
+
     public Guid UserId { get; private set; }
     public OrderStatus Status { get; private set; }
     public DateTime CreatedAt { get; private set; }
-    public List<OrderItem> Items { get; private set; } = new();
-    public decimal Total => Items.Sum(i => i.Subtotal);
+    public string? TransactionId { get; private set; }
+    public DateTime? PaymentProcessedAt { get; private set; }
 
-    private Order() { Items = new List<OrderItem>(); }
+    public IReadOnlyCollection<OrderItem> Items => _items.AsReadOnly();
+
+    // Calculado: suma de los subtotales (no se guarda en la base)
+    public Money Total => _items.Aggregate(Money.Zero(), (total, item) => total.Add(item.Subtotal));
+
+    private Order() { }
 
     public static Order Create(Guid userId)
     {
@@ -28,25 +38,43 @@ public class Order : BaseEntity
 
     public void AddItem(Guid productId, int quantity, decimal unitPrice)
     {
-        var item = OrderItem.Create(productId, quantity, unitPrice);
-        Items.Add(item);
+        if (Status != OrderStatus.Pending)
+            throw new DomainException("Solo se pueden agregar ítems a una orden pendiente.");
+
+        _items.Add(OrderItem.Create(productId, quantity, unitPrice));
     }
 
-    public void Confirm()
+    public bool BelongsTo(Guid userId) => UserId == userId;
+
+    // Regla de negocio: solo se paga una orden pendiente y con al menos un ítem
+    public void EnsureCanBePaid()
     {
         if (Status != OrderStatus.Pending)
-            throw new DomainException("Solo se pueden confirmar pedidos en estado Pendiente.");
-        if (!Items.Any())
-            throw new DomainException("El pedido debe tener al menos un item.");
-
-        Status = OrderStatus.Confirmed;
+            throw new DomainException(
+                $"Solo se pueden confirmar órdenes en estado Pending. Estado actual: {Status}.");
+        if (_items.Count == 0)
+            throw new DomainException("La orden debe tener al menos un ítem.");
     }
 
-    public void Cancel()
+    // Transición Pending -> Paid
+    public void MarkAsPaid(string transactionId)
     {
-        if (Status == OrderStatus.Delivered)
-            throw new DomainException("No se puede cancelar un pedido ya entregado.");
+        EnsureCanBePaid();
+        if (string.IsNullOrWhiteSpace(transactionId))
+            throw new DomainException("Un pago aprobado debe tener un número de transacción.");
 
-        Status = OrderStatus.Cancelled;
+        Status = OrderStatus.Paid;
+        TransactionId = transactionId;
+        PaymentProcessedAt = DateTime.UtcNow;
+    }
+
+    // Transición Pending -> PaymentRejected
+    public void MarkPaymentRejected(string? transactionId)
+    {
+        EnsureCanBePaid();
+
+        Status = OrderStatus.PaymentRejected;
+        TransactionId = transactionId;
+        PaymentProcessedAt = DateTime.UtcNow;
     }
 }

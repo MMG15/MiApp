@@ -1,6 +1,119 @@
-@MiApp.WebApi_HostAddress = http://localhost:5141
+### =========================================================
+### E-commerce (MiApp.WebApi) — http://localhost:7100
+### Flujo completo. Ejecutá las requests en orden (PaymentService tiene que estar levantado).
+### Las variables @token, @productId, etc. se completan solas con las respuestas anteriores.
+### =========================================================
 
-GET {{MiApp.WebApi_HostAddress}}/weatherforecast/
-Accept: application/json
+@shop = http://localhost:7100
+
+### 1. Login del Admin (lo crea el seed al arrancar)
+# @name loginAdmin
+POST {{shop}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "admin@sistema.com", "password": "Admin123!" }
 
 ###
+@adminToken = {{loginAdmin.response.body.token}}
+
+### 2. Admin crea un producto barato (pago aprobado)
+# @name prodBarato
+POST {{shop}}/api/products
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "nombre": "Mouse", "descripcion": "Óptico", "precio": 15000, "stock": 10 }
+
+### 3. Admin crea un producto caro (pago rechazado: supera 100000)
+# @name prodCaro
+POST {{shop}}/api/products
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "nombre": "Notebook", "descripcion": "i7", "precio": 900000, "stock": 5 }
+
+###
+@barato = {{prodBarato.response.body.id}}
+@caro = {{prodCaro.response.body.id}}
+
+### 4. Registrar un cliente (queda con rol Customer)
+# @name register
+POST {{shop}}/api/auth/register
+Content-Type: application/json
+
+{ "name": "Cliente", "email": "cliente@test.com", "password": "Cliente123!" }
+
+### 5. Login del cliente
+# @name loginCliente
+POST {{shop}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@test.com", "password": "Cliente123!" }
+
+###
+@token = {{loginCliente.response.body.token}}
+@clienteId = {{loginCliente.response.body.id}}
+
+### 6. Listar productos (cualquier usuario logueado)
+GET {{shop}}/api/products
+Authorization: Bearer {{token}}
+
+### 7. Crear orden con el producto barato -> 201, estado Pending
+# @name orden1
+POST {{shop}}/api/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "items": [ { "productId": "{{barato}}", "quantity": 2 } ] }
+
+###
+@orden1 = {{orden1.response.body.id}}
+
+### 8. Confirmar la orden -> el e-commerce llama a PaymentService -> Paid
+POST {{shop}}/api/orders/{{orden1}}/confirm
+Authorization: Bearer {{token}}
+
+### 9. Confirmar otra vez -> 400 (ya no está Pending)
+POST {{shop}}/api/orders/{{orden1}}/confirm
+Authorization: Bearer {{token}}
+
+### 10. Orden con el producto caro -> al confirmar queda PaymentRejected y vuelve el stock
+# @name orden2
+POST {{shop}}/api/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "items": [ { "productId": "{{caro}}", "quantity": 1 } ] }
+
+###
+POST {{shop}}/api/orders/{{orden2.response.body.id}}/confirm
+Authorization: Bearer {{token}}
+
+### 11. Ver una orden (dueño o Admin)
+GET {{shop}}/api/orders/{{orden1}}
+Authorization: Bearer {{token}}
+
+### 12. Mis órdenes
+GET {{shop}}/api/orders/my
+Authorization: Bearer {{token}}
+
+### 13. Todas las órdenes con token de cliente -> 403 Forbidden
+GET {{shop}}/api/orders
+Authorization: Bearer {{token}}
+
+### 14. Todas las órdenes con token de Admin -> 200
+GET {{shop}}/api/orders
+Authorization: Bearer {{adminToken}}
+
+### 15. Sin token -> 401 Unauthorized
+GET {{shop}}/api/orders/my
+
+### 16. Admin promueve al cliente a Admin (el cliente debe volver a loguearse)
+PUT {{shop}}/api/users/{{clienteId}}/role
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "rol": "Admin" }
+
+### CAMINO DE FALLO: apagá PaymentService, creá una orden y confirmala
+### -> 503 Service Unavailable y la orden sigue Pending. Volvé a levantarlo y reintentá -> Paid.

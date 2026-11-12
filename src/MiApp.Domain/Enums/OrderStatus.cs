@@ -2,9 +2,7 @@ namespace MiApp.Domain.Enums;
 
 public enum OrderStatus
 {
-    Pending = 1,
-    Confirmed = 2,
-    Shipped = 3,
-    Delivered = 4,
-    Cancelled = 5
+    Pending = 1,          // Creada, con stock reservado, esperando el pago
+    Paid = 2,             // PaymentService aprobó el pago
+    PaymentRejected = 3   // PaymentService rechazó el pago (se devuelve el stock)
 }

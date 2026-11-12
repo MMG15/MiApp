@@ -1,0 +1,63 @@
+### =========================================================
+### PaymentService — http://localhost:7200
+### Requiere un JWT emitido por el e-commerce (POST http://localhost:7100/api/auth/login).
+### =========================================================
+
+@pay = http://localhost:7200
+@shop = http://localhost:7100
+
+### 0. Obtener un token desde el e-commerce
+# @name login
+POST {{shop}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "admin@sistema.com", "password": "Admin123!" }
+
+###
+@token = {{login.response.body.token}}
+
+### 1. Pago menor a 100000 ARS -> Approved
+POST {{pay}}/api/payments/process
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "orderId": "11111111-1111-1111-1111-111111111111", "amount": 45000 }
+
+### 2. Mismo orderId otra vez -> devuelve el MISMO pago (idempotencia, no cobra dos veces)
+POST {{pay}}/api/payments/process
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "orderId": "11111111-1111-1111-1111-111111111111", "amount": 45000 }
+
+### 3. Monto >= 100000 -> Rejected
+POST {{pay}}/api/payments/process
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "orderId": "22222222-2222-2222-2222-222222222222", "amount": 150000 }
+
+### 4. Moneda distinta de ARS -> Rejected
+POST {{pay}}/api/payments/process
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "orderId": "33333333-3333-3333-3333-333333333333", "amount": 10, "currency": "USD" }
+
+### 5. Monto inválido -> 400 (FluentValidation)
+POST {{pay}}/api/payments/process
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "orderId": "44444444-4444-4444-4444-444444444444", "amount": -5 }
+
+### 6. Consultar el pago de una orden
+GET {{pay}}/api/payments/order/11111111-1111-1111-1111-111111111111
+Authorization: Bearer {{token}}
+
+### 7. Listar todos los pagos
+GET {{pay}}/api/payments
+Authorization: Bearer {{token}}
+
+### 8. Sin token -> 401
+GET {{pay}}/api/payments

@@ -4,6 +4,7 @@ using MiApp.Domain.Entities;
 using MiApp.Domain.Enums;
 using MiApp.Domain.Exceptions;
 using MiApp.Domain.Interfaces;
+using MiApp.Domain.ValueObjects;
 
 namespace MiApp.Application.Features.Auth.Commands.Register;
 
@@ -28,17 +29,23 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, RegisterR
 
     public async Task<RegisterResponse> Handle(RegisterCommand request, CancellationToken cancellationToken)
     {
-        if (await _userRepository.ExistsAsync(request.Email, cancellationToken))
-            throw new DomainException($"Ya existe un usuario con el email '{request.Email}'.");
+        // Normalizamos ANTES de buscar duplicados: " Ana@X.com" y "ana@x.com" son el mismo email
+        var email = Email.Create(request.Email);
+
+        if (await _userRepository.ExistsAsync(email, cancellationToken))
+            throw new DomainException($"Ya existe un usuario con el email '{email.Value}'.");
 
         var passwordHash = _passwordHasher.Hash(request.Password);
-        var user = User.Create(request.Name, request.Email, passwordHash, UserRole.Customer);
+
+        // Todo registro público queda como Customer. Los Admin se crean con el seed
+        // o los promueve otro Admin (PUT /api/users/{id}/role).
+        var user = User.Create(request.Name, email, passwordHash, UserRole.Customer);
 
         await _userRepository.AddAsync(user, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         var token = _jwtTokenService.GenerateToken(user);
 
-        return new RegisterResponse(user.Id, user.Name, user.Email, user.Role.ToString(), token);
+        return new RegisterResponse(user.Id, user.Name, user.Email.Value, user.Role.ToString(), token);
     }
 }

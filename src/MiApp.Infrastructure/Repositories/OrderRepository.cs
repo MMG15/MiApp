@@ -11,6 +11,7 @@ public class OrderRepository : IOrderRepository
 
     public OrderRepository(AppDbContext context) => _context = context;
 
+    // Con tracking: se usa para modificar la orden (confirmar el pago)
     public async Task<Order?> GetByIdAsync(Guid id, CancellationToken ct = default)
         => await _context.Orders
             .Include(o => o.Items)
@@ -21,6 +22,14 @@ public class OrderRepository : IOrderRepository
             .AsNoTracking()
             .Include(o => o.Items)
             .Where(o => o.UserId == userId)
+            .OrderByDescending(o => o.CreatedAt)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<Order>> GetAllAsync(CancellationToken ct = default)
+        => await _context.Orders
+            .AsNoTracking()
+            .Include(o => o.Items)
+            .OrderByDescending(o => o.CreatedAt)
             .ToListAsync(ct);
 
     public async Task AddAsync(Order order, CancellationToken ct = default)
